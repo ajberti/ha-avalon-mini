@@ -1,0 +1,7 @@
+{
+  "name": "Avalon Mini 3",
+  "content_in_root": false,
+  "domains": ["avalon_mini"],
+  "country": "global",
+  "homeassistant": "2024.1.0"
+}

@@ -1,0 +1,10 @@
+{
+  "domain": "avalon_mini",
+  "name": "Avalon Mini 3",
+  "version": "0.1.0",
+  "documentation": "https://github.com/ajberti/ha-avalon-mini",
+  "requirements": [],
+  "dependencies": [],
+  "codeowners": ["@ajberti"],
+  "iot_class": "local_polling"
+}
