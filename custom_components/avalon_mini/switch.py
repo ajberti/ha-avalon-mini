@@ -1,3 +1,5 @@
+import time
+
 from __future__ import annotations
 
 from datetime import timedelta
@@ -42,6 +44,7 @@ class AvalonPowerSwitch(SwitchEntity):
         self._attr_name = f"{name} Power"
         self._attr_unique_id = f"{slug}_power"
         self._is_on = False  # best-effort tracked state
+        self._pending_until: float | None = None  # time until which we trust the last command
 
     @property
     def is_on(self) -> bool:
@@ -49,29 +52,37 @@ class AvalonPowerSwitch(SwitchEntity):
 
     async def async_turn_on(self, **kwargs) -> None:
         await self.hass.async_add_executor_job(self._client.power_on)
-        # Optimistically set state; async_update will correct if needed
+        # Optimistically set state and start a short grace period
         self._is_on = True
+        self._pending_until = time.monotonic() + 8  # seconds
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
         await self.hass.async_add_executor_job(self._client.power_off)
         self._is_on = False
+        self._pending_until = time.monotonic() + 8  # seconds
         self.async_write_ha_state()
 
     async def async_update(self) -> None:
         """Poll device for power state so external changes are reflected."""
+        # If we're still within the grace period after a manual command,
+        # don't override the optimistic state yet.
+        if self._pending_until is not None and time.monotonic() < self._pending_until:
+            return
+
         status = await self.hass.async_add_executor_job(self._client.get_status)
         system_work = status.get("system_work")
 
         if not system_work:
             return
 
-        # From your observation:
-        #   On  -> SYSTEMSTATU[Work: In Work, Hash Board: 1]
-        #   On  -> SYSTEMSTATU[Work: In Init, Hash Board: 1]
-        #   Off -> SYSTEMSTATU[Work: In Idle, Hash Board: 1]
+        # On  -> Work: In Work / In Init
+        # Off -> Work: In Idle
         on_states = {"In Work", "In Init"}
         is_on = system_work in on_states
+
+        # Once we've trusted the real status, clear any pending flag
+        self._pending_until = None
 
         if is_on != self._is_on:
             self._is_on = is_on
