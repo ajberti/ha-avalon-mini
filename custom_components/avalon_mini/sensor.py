@@ -62,9 +62,9 @@ def _parse_cgminer_kv(raw: str) -> Dict[str, str]:
 
 
 class AvalonHashrateSensor(SensorEntity):
-    """Reports hashrate (MH/s) from cgminer 'summary' output."""
+    """Reports hashrate (TH/s) from cgminer 'summary' output."""
 
-    _attr_native_unit_of_measurement = "MH/s"
+    _attr_native_unit_of_measurement = "TH/s"
     _attr_icon = "mdi:pickaxe"
     _attr_should_poll = True
 
@@ -83,6 +83,7 @@ class AvalonHashrateSensor(SensorEntity):
         raw = await self.hass.async_add_executor_job(self._client.summary)
         data = _parse_cgminer_kv(raw)
 
+        # Prioritize these keys in order
         keys = ["MHS 5s", "MHS av", "MHS 1m", "MHS 5m", "MHS 15m"]
 
         value = None
@@ -99,7 +100,7 @@ class AvalonHashrateSensor(SensorEntity):
             return
 
         try:
-            mh_s = float(value)
+            mh_s = float(value)  # value is in MH/s
         except ValueError:
             _LOGGER.warning(
                 "Cannot parse hashrate value '%s' (key '%s')", value, chosen_key
@@ -107,8 +108,18 @@ class AvalonHashrateSensor(SensorEntity):
             self._native_value = None
             return
 
-        self._native_value = mh_s
-        _LOGGER.debug("Parsed hashrate from %s = %s MH/s", chosen_key, mh_s)
+        # Convert MH/s → TH/s
+        th_s = mh_s / 1_000_000.0
+
+        # Round to 2 decimals for nice dashboard display
+        self._native_value = round(th_s, 2)
+
+        _LOGGER.debug(
+            "Parsed hashrate from %s = %.2f TH/s (raw %.2f MH/s)",
+            chosen_key,
+            self._native_value,
+            mh_s,
+        )
 
 
 # ---------- Room temperature sensor (ITemp) ----------
