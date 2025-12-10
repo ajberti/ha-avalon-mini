@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, List
 
 from datetime import timedelta
 import logging
@@ -15,7 +15,7 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-# How often Home Assistant will call async_update on these sensors
+# How often Home Assistant will poll for state (summary/estats)
 SCAN_INTERVAL = timedelta(seconds=30)
 
 
@@ -24,15 +24,16 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Avalon Mini sensors (hashrate, ambient temp, target temp) from a config entry."""
+    """Set up Avalon Mini sensors from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
     client = data["client"]
     name = data["name"]
 
     entities = [
         AvalonHashrateSensor(client, name, entry),
-        AvalonAmbientTemperatureSensor(client, name, entry),
+        AvalonRoomTemperatureSensor(client, name, entry),
         AvalonTargetTemperatureSensor(client, name, entry),
+        AvalonPowerDrawSensor(client, name, entry),
     ]
 
     async_add_entities(entities)
@@ -42,41 +43,25 @@ async def async_setup_entry(
 
 
 def _parse_cgminer_kv(raw: str) -> Dict[str, str]:
-    """
-    Parse a cgminer-style response string into a flat dict of key->value.
-
-    Example input:
-      STATUS=...|SUMMARY,Elapsed=558,MHS av=32581844.99,MHS 5s=36807196.51,...
-
-    We:
-      - split on '|'
-      - split each part on ','
-      - split each item on '='
-      - build a dict of last-seen key=value
-    """
+    """Parse cgminer-style response into a simple dict."""
     result: Dict[str, str] = {}
-
     if not raw:
         return result
 
     for section in raw.split("|"):
         for item in section.split(","):
-            if "=" not in item:
-                continue
-            key, value = item.split("=", 1)
-            key = key.strip()
-            value = value.strip()
-            if key:
-                result[key] = value
+            if "=" in item:
+                key, value = item.split("=", 1)
+                result[key.strip()] = value.strip()
 
     return result
 
 
-# ---------- Hashrate sensor (MH/s) ----------
+# ---------- Hashrate sensor ----------
 
 
 class AvalonHashrateSensor(SensorEntity):
-    """Reports hashrate based on cgminer 'summary' output."""
+    """Reports hashrate (MH/s) from cgminer 'summary' output."""
 
     _attr_native_unit_of_measurement = "MH/s"
     _attr_icon = "mdi:pickaxe"
@@ -94,64 +79,42 @@ class AvalonHashrateSensor(SensorEntity):
         return self._native_value
 
     async def async_update(self) -> None:
-        """Fetch latest summary data from the miner and update hashrate."""
         raw = await self.hass.async_add_executor_job(self._client.summary)
         data = _parse_cgminer_kv(raw)
 
-        # We know the keys look like:
-        #   MHS av=32581844.99
-        #   MHS 5s=36807196.51
-        #   MHS 1m=...
-        #   etc.
-        keys_in_preference = [
-            "MHS 5s",
-            "MHS av",
-            "MHS 1m",
-            "MHS 5m",
-            "MHS 15m",
-        ]
+        keys = ["MHS 5s", "MHS av", "MHS 1m", "MHS 5m", "MHS 15m"]
 
         value = None
         chosen_key = None
-
-        for k in keys_in_preference:
-            if k in data:
-                value = data[k]
-                chosen_key = k
+        for key in keys:
+            if key in data:
+                value = data[key]
+                chosen_key = key
                 break
 
         if value is None:
-            _LOGGER.debug("No known hashrate key found in summary: %s", data)
+            _LOGGER.debug("No hashrate key found in summary: %s", data)
             self._native_value = None
             return
 
         try:
             mh_s = float(value)
-        except (TypeError, ValueError):
+        except ValueError:
             _LOGGER.warning(
-                "Failed to parse hashrate value '%s' for key '%s'",
-                value,
-                chosen_key,
+                "Cannot parse hashrate value '%s' (key '%s')", value, chosen_key
             )
             self._native_value = None
             return
 
-        # Keep in MH/s (nice human-friendly numbers)
         self._native_value = mh_s
-
-        _LOGGER.debug(
-            "Parsed hashrate from key '%s' value '%s' => %s MH/s",
-            chosen_key,
-            value,
-            self._native_value,
-        )
+        _LOGGER.debug("Parsed hashrate from %s = %s MH/s", chosen_key, mh_s)
 
 
-# ---------- Ambient temperature sensor (TA[xx]) ----------
+# ---------- Room temperature sensor (ITemp) ----------
 
 
-class AvalonAmbientTemperatureSensor(SensorEntity):
-    """Reports ambient temperature (TA) from cgminer 'estats' output."""
+class AvalonRoomTemperatureSensor(SensorEntity):
+    """Reports the inlet / room temperature (ITemp) from estats."""
 
     _attr_native_unit_of_measurement = "°C"
     _attr_icon = "mdi:thermometer"
@@ -160,8 +123,8 @@ class AvalonAmbientTemperatureSensor(SensorEntity):
     def __init__(self, client, name: str, entry: ConfigEntry) -> None:
         self._client = client
         slug = entry.entry_id
-        self._attr_name = f"{name} Ambient Temperature"
-        self._attr_unique_id = f"{slug}_ambient_temperature"
+        self._attr_name = f"{name} Room Temperature"
+        self._attr_unique_id = f"{slug}_room_temperature"
         self._native_value: float | None = None
 
     @property
@@ -169,29 +132,28 @@ class AvalonAmbientTemperatureSensor(SensorEntity):
         return self._native_value
 
     async def async_update(self) -> None:
-        """Fetch latest extended stats and update ambient temperature."""
+        """Parse ITemp[...] from estats."""
         raw = await self.hass.async_add_executor_job(self._client.estats)
 
-        # estats contains e.g.: ... TA[66] ...
-        m = re.search(r"TA\[(\d+(\.\d+)?)\]", raw)
+        # estats includes e.g. ITemp[31]
+        m = re.search(r"ITemp\[(\d+(\.\d+)?)\]", raw)
         if not m:
-            _LOGGER.debug("No TA[...] (ambient temp) found in estats: %s", raw)
+            _LOGGER.debug("No ITemp[...] value found in estats: %s", raw)
             self._native_value = None
             return
 
-        value = m.group(1)
         try:
-            temp = float(value)
-        except (TypeError, ValueError):
-            _LOGGER.warning("Failed to parse ambient temp value '%s' from TA[]", value)
+            temp = float(m.group(1))
+        except ValueError:
+            _LOGGER.warning("Failed to parse ITemp value '%s'", m.group(1))
             self._native_value = None
             return
 
         self._native_value = temp
-        _LOGGER.debug("Parsed ambient temperature TA[%s] => %.2f °C", value, temp)
+        _LOGGER.debug("Parsed room temperature ITemp => %.2f°C", temp)
 
 
-# ---------- Target temperature sensor (TarT[xx]) ----------
+# ---------- Target temperature sensor (TarT) ----------
 
 
 class AvalonTargetTemperatureSensor(SensorEntity):
@@ -213,23 +175,90 @@ class AvalonTargetTemperatureSensor(SensorEntity):
         return self._native_value
 
     async def async_update(self) -> None:
-        """Fetch latest extended stats and update target temperature."""
+        """Parse TarT[...] from estats."""
         raw = await self.hass.async_add_executor_job(self._client.estats)
 
-        # estats contains e.g.: ... TarT[90] ...
         m = re.search(r"TarT\[(\d+(\.\d+)?)\]", raw)
         if not m:
-            _LOGGER.debug("No TarT[...] (target temp) found in estats: %s", raw)
+            _LOGGER.debug("No TarT[...] value found in estats: %s", raw)
             self._native_value = None
             return
 
-        value = m.group(1)
         try:
-            temp = float(value)
-        except (TypeError, ValueError):
-            _LOGGER.warning("Failed to parse TarT (target temp) value '%s'", value)
+            temp = float(m.group(1))
+        except ValueError:
+            _LOGGER.warning("Failed to parse TarT value '%s'", m.group(1))
             self._native_value = None
             return
 
         self._native_value = temp
-        _LOGGER.debug("Parsed target temperature TarT[%s] => %.2f °C", value, temp)
+        _LOGGER.debug("Parsed target temperature TarT => %.2f°C", temp)
+
+
+# ---------- Power draw sensor (PS[...]) ----------
+
+
+class AvalonPowerDrawSensor(SensorEntity):
+    """Reports estimated power draw in watts from the PS[...] field."""
+
+    _attr_native_unit_of_measurement = "W"
+    _attr_icon = "mdi:flash"
+    _attr_should_poll = True
+
+    def __init__(self, client, name: str, entry: ConfigEntry) -> None:
+        self._client = client
+        slug = entry.entry_id
+        self._attr_name = f"{name} Power Draw"
+        self._attr_unique_id = f"{slug}_power_draw"
+        self._native_value: float | None = None
+
+    @property
+    def native_value(self) -> float | None:
+        return self._native_value
+
+    async def async_update(self) -> None:
+        """
+        Parse PS[...] from estats and use one of the values as watts.
+
+        Example estats fragment:
+          PS[0 1215 2034 37 756 2032 808]
+
+        Based on observation, the 5th value (index 4) appears to represent
+        power draw in watts (~756 W here). If you discover official docs or
+        different mapping, adjust the index below.
+        """
+        raw = await self.hass.async_add_executor_job(self._client.estats)
+
+        m = re.search(r"PS\[(.*?)\]", raw)
+        if not m:
+            _LOGGER.debug("No PS[...] field found in estats: %s", raw)
+            self._native_value = None
+            return
+
+        contents = m.group(1).strip()
+        if not contents:
+            _LOGGER.debug("Empty PS[...] contents in estats: %s", raw)
+            self._native_value = None
+            return
+
+        parts: List[str] = contents.split()
+        # Need at least 5 elements to read index 4 safely
+        if len(parts) < 5:
+            _LOGGER.debug("Unexpected PS format '%s' (need >=5 values)", contents)
+            self._native_value = None
+            return
+
+        # Use index 4 as power in watts (e.g. '756' in the example above)
+        power_str = parts[4]
+
+        try:
+            watts = float(power_str)
+        except ValueError:
+            _LOGGER.warning(
+                "Failed to parse power value '%s' from PS[%s]", power_str, contents
+            )
+            self._native_value = None
+            return
+
+        self._native_value = watts
+        _LOGGER.debug("Parsed power draw from PS[...] => %.1f W", watts)
