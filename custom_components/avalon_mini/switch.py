@@ -1,8 +1,8 @@
-import time
-
 from __future__ import annotations
 
 from datetime import timedelta
+import logging
+import time
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
@@ -11,6 +11,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 
+_LOGGER = logging.getLogger(__name__)
+
+# How often Home Assistant will poll for state
 SCAN_INTERVAL = timedelta(seconds=30)
 
 
@@ -24,7 +27,7 @@ async def async_setup_entry(
     client = data["client"]
     name = data["name"]
 
-    entities = [
+    entities: list[SwitchEntity] = [
         AvalonPowerSwitch(client, name, entry),
         AvalonDisplaySwitch(client, name, entry),
     ]
@@ -44,23 +47,27 @@ class AvalonPowerSwitch(SwitchEntity):
         self._attr_name = f"{name} Power"
         self._attr_unique_id = f"{slug}_power"
         self._is_on = False  # best-effort tracked state
-        self._pending_until: float | None = None  # time until which we trust the last command
+        # Grace period after issuing a power command during which we don't override
+        # the optimistic state with stale status from estats.
+        self._pending_until: float | None = None
 
     @property
     def is_on(self) -> bool:
         return self._is_on
 
     async def async_turn_on(self, **kwargs) -> None:
+        """Handle turning the miner on from Home Assistant."""
         await self.hass.async_add_executor_job(self._client.power_on)
         # Optimistically set state and start a short grace period
         self._is_on = True
-        self._pending_until = time.monotonic() + 8  # seconds
+        self._pending_until = time.monotonic() + 5  # seconds
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
+        """Handle turning the miner off from Home Assistant."""
         await self.hass.async_add_executor_job(self._client.power_off)
         self._is_on = False
-        self._pending_until = time.monotonic() + 8  # seconds
+        self._pending_until = time.monotonic() + 5  # seconds
         self.async_write_ha_state()
 
     async def async_update(self) -> None:
@@ -76,8 +83,10 @@ class AvalonPowerSwitch(SwitchEntity):
         if not system_work:
             return
 
-        # On  -> Work: In Work / In Init
-        # Off -> Work: In Idle
+        # From your observation:
+        #   On  -> SYSTEMSTATU[Work: In Work, Hash Board: 1]
+        #   On  -> SYSTEMSTATU[Work: In Init, Hash Board: 1]
+        #   Off -> SYSTEMSTATU[Work: In Idle, Hash Board: 1]
         on_states = {"In Work", "In Init"}
         is_on = system_work in on_states
 
@@ -85,9 +94,10 @@ class AvalonPowerSwitch(SwitchEntity):
         self._pending_until = None
 
         if is_on != self._is_on:
+            _LOGGER.debug("Power state from SYSTEMSTATU '%s' -> %s", system_work, is_on)
             self._is_on = is_on
             self.async_write_ha_state()
-             
+
 
 class AvalonDisplaySwitch(SwitchEntity):
     """Switch to toggle the Avalon Mini display."""
@@ -107,11 +117,13 @@ class AvalonDisplaySwitch(SwitchEntity):
         return self._is_on
 
     async def async_turn_on(self, **kwargs) -> None:
+        """Turn the display on."""
         await self.hass.async_add_executor_job(self._client.set_display, True)
         self._is_on = True
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
+        """Turn the display off."""
         await self.hass.async_add_executor_job(self._client.set_display, False)
         self._is_on = False
         self.async_write_ha_state()
@@ -125,5 +137,6 @@ class AvalonDisplaySwitch(SwitchEntity):
 
         is_on = lcd_on == 1
         if is_on != self._is_on:
+            _LOGGER.debug("Display state from LcdOnoff[%s] -> %s", lcd_on, is_on)
             self._is_on = is_on
             self.async_write_ha_state()
