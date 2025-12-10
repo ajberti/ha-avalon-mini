@@ -49,6 +49,7 @@ class AvalonPowerSwitch(SwitchEntity):
 
     async def async_turn_on(self, **kwargs) -> None:
         await self.hass.async_add_executor_job(self._client.power_on)
+        # Optimistically set state; async_update will correct if needed
         self._is_on = True
         self.async_write_ha_state()
 
@@ -60,19 +61,22 @@ class AvalonPowerSwitch(SwitchEntity):
     async def async_update(self) -> None:
         """Poll device for power state so external changes are reflected."""
         status = await self.hass.async_add_executor_job(self._client.get_status)
-        softoff = status.get("softoff")
-        if softoff is None:
+        system_work = status.get("system_work")
+
+        if not system_work:
             return
 
         # From your observation:
-        #   SoftOFF[5] => OFF
-        #   SoftOFF[7] => ON
-        is_on = softoff == 7
+        #   On  -> SYSTEMSTATU[Work: In Work, Hash Board: 1]
+        #   On  -> SYSTEMSTATU[Work: In Init, Hash Board: 1]
+        #   Off -> SYSTEMSTATU[Work: In Idle, Hash Board: 1]
+        on_states = {"In Work", "In Init"}
+        is_on = system_work in on_states
 
         if is_on != self._is_on:
             self._is_on = is_on
             self.async_write_ha_state()
-
+             
 
 class AvalonDisplaySwitch(SwitchEntity):
     """Switch to toggle the Avalon Mini display."""

@@ -109,21 +109,22 @@ class AvalonMiniClient:
         cmd = f"ascset|0,display,set,{value}"  # TODO: adjust to your real display command
         return self._send_cmd(cmd)
         
+        
     def get_status(self) -> dict:
         """
         Fetch and parse current status from 'estats'.
 
-        Returns a dict with:
+        Returns a dict with e.g.:
           - workmode: int (0=heating,1=mining,2=night)
           - worklevel: int (-1=eco,0=super)
-          - softoff: int (0 or 1)
+          - softoff: int (raw SoftOFF value)
           - lcd_on: int (1 on, 0 off)
-        and you can extend this with more fields later.
+          - system_work: str ("In Work", "In Init", "In Idle", etc.)
         """
         raw = self.estats()
         status: dict = {}
 
-        # WORKMODE[0] WORKLEVEL[0] SoftOFF[0] LcdOnoff[1] ...
+        # WORKMODE[0] WORKLEVEL[0] ...
         m = re.search(r"WORKMODE\[(\-?\d+)\]", raw)
         if m:
             status["workmode"] = int(m.group(1))
@@ -140,5 +141,15 @@ class AvalonMiniClient:
         if m:
             status["lcd_on"] = int(m.group(1))
 
-        return status
+        # SYSTEMSTATU[Work: In Work, Hash Board: 1]
+        m = re.search(r"SYSTEMSTATU\[(.*?)\]", raw)
+        if m:
+            system_str = m.group(1)
+            # Try to pull out the "Work: XXX" bit specifically
+            m2 = re.search(r"Work:\s*([^,]+)", system_str)
+            if m2:
+                status["system_work"] = m2.group(1).strip()
+            else:
+                status["system_work"] = system_str.strip()
 
+        return status
