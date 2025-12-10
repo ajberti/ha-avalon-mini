@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
+from datetime import timedelta  # <-- see note below
 from homeassistant.components.select import SelectEntity
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 
-SCAN_INTERVAL = timedelta(seconds=30)  # how often to poll estats for state
+SCAN_INTERVAL = timedelta(seconds=30)
 
 # Labels shown in HA
 MODE_OPTIONS = ["heating", "mining", "night"]
@@ -31,20 +31,19 @@ INDEX_TO_MODE = {v: k for k, v in MODE_TO_INDEX.items()}
 INDEX_TO_LEVEL = {v: k for k, v in LEVEL_TO_INDEX.items()}
 
 
-async def async_setup_platform(
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
-    async_add_entities,
-    discovery_info: DiscoveryInfoType | None = None,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Avalon Mini selects (mode, level)."""
-    data = hass.data[DOMAIN]
+    """Set up Avalon Mini selects (mode, level) from a config entry."""
+    data = hass.data[DOMAIN][entry.entry_id]
     client = data["client"]
     name = data["name"]
 
     entities = [
-        AvalonModeSelect(client, name),
-        AvalonLevelSelect(client, name),
+        AvalonModeSelect(client, name, entry),
+        AvalonLevelSelect(client, name, entry),
     ]
 
     async_add_entities(entities)
@@ -56,9 +55,9 @@ class AvalonModeSelect(SelectEntity):
     _attr_options = MODE_OPTIONS
     _attr_should_poll = True
 
-    def __init__(self, client, name: str) -> None:
+    def __init__(self, client, name: str, entry: ConfigEntry) -> None:
         self._client = client
-        slug = name.lower().replace(" ", "_")
+        slug = entry.entry_id
         self._attr_name = f"{name} Mode"
         self._attr_unique_id = f"{slug}_mode"
         self._current_option = "heating"
@@ -95,9 +94,9 @@ class AvalonLevelSelect(SelectEntity):
     _attr_options = LEVEL_OPTIONS
     _attr_should_poll = True
 
-    def __init__(self, client, name: str) -> None:
+    def __init__(self, client, name: str, entry: ConfigEntry) -> None:
         self._client = client
-        slug = name.lower().replace(" ", "_")
+        slug = entry.entry_id
         self._attr_name = f"{name} Level"
         self._attr_unique_id = f"{slug}_level"
         self._current_option = "eco"

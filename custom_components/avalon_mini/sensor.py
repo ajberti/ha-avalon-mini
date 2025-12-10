@@ -2,33 +2,37 @@ from __future__ import annotations
 
 from typing import Dict
 
+from datetime import timedelta
 import logging
 import re
 
 from homeassistant.components.sensor import SensorEntity
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+# How often Home Assistant will call async_update on these sensors
+SCAN_INTERVAL = timedelta(seconds=30)
 
-async def async_setup_platform(
+
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
-    async_add_entities,
-    discovery_info: DiscoveryInfoType | None = None,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Avalon Mini sensors (hashrate, ambient temp, target temp)."""
-    data = hass.data[DOMAIN]
+    """Set up Avalon Mini sensors (hashrate, ambient temp, target temp) from a config entry."""
+    data = hass.data[DOMAIN][entry.entry_id]
     client = data["client"]
     name = data["name"]
 
     entities = [
-        AvalonHashrateSensor(client, name),
-        AvalonAmbientTemperatureSensor(client, name),
-        AvalonTargetTemperatureSensor(client, name),
+        AvalonHashrateSensor(client, name, entry),
+        AvalonAmbientTemperatureSensor(client, name, entry),
+        AvalonTargetTemperatureSensor(client, name, entry),
     ]
 
     async_add_entities(entities)
@@ -76,10 +80,11 @@ class AvalonHashrateSensor(SensorEntity):
 
     _attr_native_unit_of_measurement = "MH/s"
     _attr_icon = "mdi:pickaxe"
+    _attr_should_poll = True
 
-    def __init__(self, client, name: str) -> None:
+    def __init__(self, client, name: str, entry: ConfigEntry) -> None:
         self._client = client
-        slug = name.lower().replace(" ", "_")
+        slug = entry.entry_id
         self._attr_name = f"{name} Hashrate"
         self._attr_unique_id = f"{slug}_hashrate"
         self._native_value: float | None = None
@@ -150,10 +155,11 @@ class AvalonAmbientTemperatureSensor(SensorEntity):
 
     _attr_native_unit_of_measurement = "°C"
     _attr_icon = "mdi:thermometer"
+    _attr_should_poll = True
 
-    def __init__(self, client, name: str) -> None:
+    def __init__(self, client, name: str, entry: ConfigEntry) -> None:
         self._client = client
-        slug = name.lower().replace(" ", "_")
+        slug = entry.entry_id
         self._attr_name = f"{name} Ambient Temperature"
         self._attr_unique_id = f"{slug}_ambient_temperature"
         self._native_value: float | None = None
@@ -193,10 +199,11 @@ class AvalonTargetTemperatureSensor(SensorEntity):
 
     _attr_native_unit_of_measurement = "°C"
     _attr_icon = "mdi:thermometer-check"
+    _attr_should_poll = True
 
-    def __init__(self, client, name: str) -> None:
+    def __init__(self, client, name: str, entry: ConfigEntry) -> None:
         self._client = client
-        slug = name.lower().replace(" ", "_")
+        slug = entry.entry_id
         self._attr_name = f"{name} Target Temperature"
         self._attr_unique_id = f"{slug}_target_temperature"
         self._native_value: float | None = None

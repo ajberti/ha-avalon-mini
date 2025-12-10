@@ -3,28 +3,28 @@ from __future__ import annotations
 from datetime import timedelta
 
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 
 SCAN_INTERVAL = timedelta(seconds=30)
 
 
-async def async_setup_platform(
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
-    async_add_entities,
-    discovery_info: DiscoveryInfoType | None = None,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Avalon Mini switches (power, display)."""
-    data = hass.data[DOMAIN]
+    """Set up Avalon Mini switches (power, display) from a config entry."""
+    data = hass.data[DOMAIN][entry.entry_id]
     client = data["client"]
     name = data["name"]
 
     entities = [
-        AvalonPowerSwitch(client, name),
-        AvalonDisplaySwitch(client, name),
+        AvalonPowerSwitch(client, name, entry),
+        AvalonDisplaySwitch(client, name, entry),
     ]
 
     async_add_entities(entities)
@@ -36,9 +36,9 @@ class AvalonPowerSwitch(SwitchEntity):
     _attr_icon = "mdi:power"
     _attr_should_poll = True
 
-    def __init__(self, client, name: str) -> None:
+    def __init__(self, client, name: str, entry: ConfigEntry) -> None:
         self._client = client
-        slug = name.lower().replace(" ", "_")
+        slug = entry.entry_id
         self._attr_name = f"{name} Power"
         self._attr_unique_id = f"{slug}_power"
         self._is_on = False  # best-effort tracked state
@@ -67,11 +67,12 @@ class AvalonPowerSwitch(SwitchEntity):
         # From your observation:
         #   SoftOFF[5] => OFF
         #   SoftOFF[7] => ON
-        is_on = (softoff == 7)
+        is_on = softoff == 7
 
         if is_on != self._is_on:
             self._is_on = is_on
             self.async_write_ha_state()
+
 
 class AvalonDisplaySwitch(SwitchEntity):
     """Switch to toggle the Avalon Mini display."""
@@ -79,9 +80,9 @@ class AvalonDisplaySwitch(SwitchEntity):
     _attr_icon = "mdi:monitor"
     _attr_should_poll = True
 
-    def __init__(self, client, name: str) -> None:
+    def __init__(self, client, name: str, entry: ConfigEntry) -> None:
         self._client = client
-        slug = name.lower().replace(" ", "_")
+        slug = entry.entry_id
         self._attr_name = f"{name} Display"
         self._attr_unique_id = f"{slug}_display"
         self._is_on = True  # assume on at startup
