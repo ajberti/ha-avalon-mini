@@ -62,7 +62,7 @@ def _parse_cgminer_kv(raw: str) -> Dict[str, str]:
 
 
 class AvalonHashrateSensor(SensorEntity):
-    """Reports hashrate (TH/s) from cgminer 'summary' output."""
+    """Reports hashrate (TH/s) from miner stats (GHSspd)."""
 
     _attr_native_unit_of_measurement = "TH/s"
     _attr_icon = "mdi:pickaxe"
@@ -80,62 +80,40 @@ class AvalonHashrateSensor(SensorEntity):
         return self._native_value
 
     async def async_update(self) -> None:
-        raw = await self.hass.async_add_executor_job(self._client.summary)
-        data = _parse_cgminer_kv(raw)
+        """
+        Use the Avalon Home 'litestats' (or fallback to 'estats') output to
+        parse the current hashrate from the GHSspd[...] field.
 
-        # Prioritize likely cgminer keys in order.
-        # Many Avalon/cgminer builds expose either MH/s *or* GH/s fields.
-        mhs_keys = ["MHS 5s", "MHS av", "MHS 1m", "MHS 5m", "MHS 15m"]
-        ghs_keys = ["GHS 5s", "GHS av", "GHS 1m", "GHS 5m", "GHS 15m"]
+        Example fragment:
+          GHSspd[37500.00]
+        """
+        # Prefer 'litestats' if available; fall back to 'estats'
+        try:
+            raw = await self.hass.async_add_executor_job(self._client.litestats)
+        except AttributeError:
+            raw = await self.hass.async_add_executor_job(self._client.estats)
 
-        value = None
-        chosen_key = None
-        scale = None  # "mh" or "gh"
-
-        for key in mhs_keys:
-            if key in data:
-                value = data[key]
-                chosen_key = key
-                scale = "mh"
-                break
-
-        if value is None:
-            for key in ghs_keys:
-                if key in data:
-                    value = data[key]
-                    chosen_key = key
-                    scale = "gh"
-                    break
-
-        if value is None or scale is None:
-            _LOGGER.debug("No hashrate key found in summary: %s", data)
+        m = re.search(r"GHSspd\[(\d+(\.\d+)?)\]", raw)
+        if not m:
+            _LOGGER.debug("No GHSspd[...] value found in stats: %s", raw)
             self._native_value = None
             return
 
         try:
-            raw_rate = float(value)
+            ghs = float(m.group(1))
         except ValueError:
-            _LOGGER.warning(
-                "Cannot parse hashrate value '%s' (key '%s')", value, chosen_key
-            )
+            _LOGGER.warning("Failed to parse GHSspd value '%s'", m.group(1))
             self._native_value = None
             return
 
-        # Convert MH/s or GH/s → TH/s
-        if scale == "mh":
-            th_s = raw_rate / 1_000_000.0
-        else:  # "gh"
-            th_s = raw_rate / 1_000.0
-
-        # Round to 2 decimals for nice dashboard display
+        # Avalon Q templates divide by 1000 to convert GH/s → TH/s
+        th_s = ghs / 1000.0
         self._native_value = round(th_s, 2)
 
         _LOGGER.debug(
-            "Parsed hashrate from %s = %.2f TH/s (raw %.2f %s/s)",
-            chosen_key,
+            "Parsed hashrate from GHSspd => %.2f TH/s (raw %.2f GH/s)",
             self._native_value,
-            raw_rate,
-            scale.upper(),
+            ghs,
         )
 
 

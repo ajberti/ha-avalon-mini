@@ -38,6 +38,10 @@ class AvalonMiniClient:
     def estats(self) -> str:
         return self._send_cmd("estats")
 
+    def litestats(self) -> str:
+        """Return the raw 'litestats' output (Avalon mini stats)."""
+        return self._send_cmd("litestats")
+
     # --- Power control ---
 
     def power_on(self) -> str:
