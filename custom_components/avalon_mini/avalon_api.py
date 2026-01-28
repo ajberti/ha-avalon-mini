@@ -98,15 +98,24 @@ class AvalonMiniClient:
         """
         Toggle the front display.
 
-        This is *device-specific*; replace with the exact command from
-        your Avalon Mini 3 API documentation.
+        The Avalon Mini 3 exposes the display state in `estats` as:
 
-        Example placeholder:
-          ascset|0,display,set,1  (on)
-          ascset|0,display,set,0  (off)
+            LcdOnoff[1]  -> display on
+            LcdOnoff[0]  -> display off
+
+        In line with the other controls (e.g. `workmode`, `worklevel`), the
+        corresponding `ascset` command uses the same key:
+
+            ascset|0,LcdOnoff,set,1  (on)
+            ascset|0,LcdOnoff,set,0  (off)
+
+        Using a different/placeholder key (like `display`) will be silently
+        ignored by the device, which makes the Home Assistant switch appear
+        to "bounce" back to its previous state as soon as the next poll
+        reads the real value from `estats`.
         """
         value = 1 if on else 0
-        cmd = f"ascset|0,display,set,{value}"  # TODO: adjust to your real display command
+        cmd = f"ascset|0,LcdOnoff,set,{value}"
         return self._send_cmd(cmd)
         
         

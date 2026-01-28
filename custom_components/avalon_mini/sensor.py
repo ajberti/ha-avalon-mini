@@ -83,24 +83,37 @@ class AvalonHashrateSensor(SensorEntity):
         raw = await self.hass.async_add_executor_job(self._client.summary)
         data = _parse_cgminer_kv(raw)
 
-        # Prioritize these keys in order
-        keys = ["MHS 5s", "MHS av", "MHS 1m", "MHS 5m", "MHS 15m"]
+        # Prioritize likely cgminer keys in order.
+        # Many Avalon/cgminer builds expose either MH/s *or* GH/s fields.
+        mhs_keys = ["MHS 5s", "MHS av", "MHS 1m", "MHS 5m", "MHS 15m"]
+        ghs_keys = ["GHS 5s", "GHS av", "GHS 1m", "GHS 5m", "GHS 15m"]
 
         value = None
         chosen_key = None
-        for key in keys:
+        scale = None  # "mh" or "gh"
+
+        for key in mhs_keys:
             if key in data:
                 value = data[key]
                 chosen_key = key
+                scale = "mh"
                 break
 
         if value is None:
+            for key in ghs_keys:
+                if key in data:
+                    value = data[key]
+                    chosen_key = key
+                    scale = "gh"
+                    break
+
+        if value is None or scale is None:
             _LOGGER.debug("No hashrate key found in summary: %s", data)
             self._native_value = None
             return
 
         try:
-            mh_s = float(value)  # value is in MH/s
+            raw_rate = float(value)
         except ValueError:
             _LOGGER.warning(
                 "Cannot parse hashrate value '%s' (key '%s')", value, chosen_key
@@ -108,17 +121,21 @@ class AvalonHashrateSensor(SensorEntity):
             self._native_value = None
             return
 
-        # Convert MH/s → TH/s
-        th_s = mh_s / 1_000_000.0
+        # Convert MH/s or GH/s → TH/s
+        if scale == "mh":
+            th_s = raw_rate / 1_000_000.0
+        else:  # "gh"
+            th_s = raw_rate / 1_000.0
 
         # Round to 2 decimals for nice dashboard display
         self._native_value = round(th_s, 2)
 
         _LOGGER.debug(
-            "Parsed hashrate from %s = %.2f TH/s (raw %.2f MH/s)",
+            "Parsed hashrate from %s = %.2f TH/s (raw %.2f %s/s)",
             chosen_key,
             self._native_value,
-            mh_s,
+            raw_rate,
+            scale.upper(),
         )
 
 
