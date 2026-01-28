@@ -111,6 +111,9 @@ class AvalonDisplaySwitch(SwitchEntity):
         self._attr_name = f"{name} Display"
         self._attr_unique_id = f"{slug}_display"
         self._is_on = True  # assume on at startup
+        # Grace period after issuing a display command during which we don't
+        # override the optimistic state with stale status from estats.
+        self._pending_until: float | None = None
 
     @property
     def is_on(self) -> bool:
@@ -119,23 +122,34 @@ class AvalonDisplaySwitch(SwitchEntity):
     async def async_turn_on(self, **kwargs) -> None:
         """Turn the display on."""
         await self.hass.async_add_executor_job(self._client.set_display, True)
+        # Optimistically set state and start a short grace period
         self._is_on = True
+        self._pending_until = time.monotonic() + 5  # seconds
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
         """Turn the display off."""
         await self.hass.async_add_executor_job(self._client.set_display, False)
         self._is_on = False
+        self._pending_until = time.monotonic() + 5  # seconds
         self.async_write_ha_state()
 
     async def async_update(self) -> None:
         """Poll device for display state so external changes are reflected."""
+        # If we're still within the grace period after a manual command,
+        # don't override the optimistic state yet.
+        if self._pending_until is not None and time.monotonic() < self._pending_until:
+            return
+
         status = await self.hass.async_add_executor_job(self._client.get_status)
         lcd_on = status.get("lcd_on")
         if lcd_on is None:
             return
 
         is_on = lcd_on == 1
+
+        # Once we've trusted the real status, clear any pending flag
+        self._pending_until = None
         if is_on != self._is_on:
             _LOGGER.debug("Display state from LcdOnoff[%s] -> %s", lcd_on, is_on)
             self._is_on = is_on
